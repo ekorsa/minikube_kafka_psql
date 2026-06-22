@@ -284,24 +284,26 @@ cmd_smoke_test() {
         bash -c "cat /proc/sys/kernel/random/uuid" 2>/dev/null \
         || cat /proc/sys/kernel/random/uuid)
 
+    local ts
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     log_info "Вставляю событие (aggregate_id=$aggregate_id)"
     kubectl exec -n postgres "$pg_pod" -- \
         bash -c "PGPASSWORD='appuser_password_change_me' psql -h localhost -U appuser -d appdb -c \"
             INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload)
             VALUES ('orders', '$aggregate_id', 'OrderCreated',
-                    '{\\\"customerId\\\": \\\"smoke-test\\\", \\\"amount\\\": 42}'::jsonb);
+                    '{\\\"customerId\\\": \\\"smoke-test\\\", \\\"amount\\\": 42, \\\"ts\\\": \\\"$ts\\\"}'::jsonb);
         \"" 2>&1 | grep -E "INSERT|ERROR"
 
     log_info "Жду 10 секунд (Debezium WAL latency)..."
     sleep 10
 
-    log_info "Читаю из Kafka topic outbox.events.orders"
+    log_info "Читаю из Kafka topic outbox.events.orders (последние 3 с каждой партиции)"
     kubectl run kcat-smoke-$$ \
         --image=edenhill/kcat:1.7.1 \
         --restart=Never -n kafka \
         --command -- \
         sh -c 'timeout 10 kcat -b kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092 \
-               -t outbox.events.orders -C -o beginning -e -q 2>/dev/null; true' \
+               -t outbox.events.orders -C -o -3 -e -q 2>/dev/null; true' \
         &>/dev/null
 
     until kubectl get pod "kcat-smoke-$$" -n kafka --no-headers 2>/dev/null \
@@ -310,7 +312,7 @@ cmd_smoke_test() {
     done
 
     local msgs
-    msgs=$(kubectl logs "kcat-smoke-$$" -n kafka 2>/dev/null | tail -5)
+    msgs=$(kubectl logs "kcat-smoke-$$" -n kafka 2>/dev/null)
     kubectl delete pod "kcat-smoke-$$" -n kafka --now &>/dev/null
 
     if [[ -z "$msgs" ]]; then
