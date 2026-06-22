@@ -1,0 +1,119 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnect
+metadata:
+  name: debezium-connect
+  namespace: {{ .Values.namespace }}
+  annotations:
+    strimzi.io/use-connector-resources: "true"
+spec:
+  version: 3.7.0
+  replicas: {{ .Values.connect.replicas }}
+  bootstrapServers: kafka-cluster-kafka-bootstrap:{{ .Values.listeners.plain.port }}
+  image: {{ .Values.connect.image }}
+  config:
+    group.id: debezium-connect-cluster
+    offset.storage.topic: debezium-connect-offsets
+    config.storage.topic: debezium-connect-configs
+    status.storage.topic: debezium-connect-status
+    offset.storage.replication.factor: {{ .Values.topicReplicationFactor }}
+    config.storage.replication.factor: {{ .Values.topicReplicationFactor }}
+    status.storage.replication.factor: {{ .Values.topicReplicationFactor }}
+    key.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable: false
+    value.converter.schemas.enable: false
+  resources:
+    requests:
+      cpu: {{ .Values.connect.resources.requests.cpu }}
+      memory: {{ .Values.connect.resources.requests.memory }}
+    limits:
+      cpu: {{ .Values.connect.resources.limits.cpu }}
+      memory: {{ .Values.connect.resources.limits.memory }}
+  readinessProbe:
+    initialDelaySeconds: 90
+    periodSeconds: 20
+    timeoutSeconds: 15
+    failureThreshold: 6
+  livenessProbe:
+    initialDelaySeconds: 120
+    periodSeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 6
+  metricsConfig:
+    type: jmxPrometheusExporter
+    valueFrom:
+      configMapKeyRef:
+        name: connect-metrics-config
+        key: metrics-config.yml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: connect-metrics-config
+  namespace: {{ .Values.namespace }}
+data:
+  metrics-config.yml: |
+    lowercaseOutputName: true
+    rules:
+      - pattern: "kafka.connect<type=(.+), connector=(.+), task=(.+)><>(.+):"
+        name: "kafka_connect_$1_$4"
+        labels:
+          connector: "$2"
+          task: "$3"
+        type: GAUGE
+      - pattern: "kafka.connect<type=(.+)><>(.+):"
+        name: "kafka_connect_$1_$2"
+        type: GAUGE
+---
+{{- if .Values.connector.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.connector.postgresPasswordSecret }}
+  namespace: {{ .Values.namespace }}
+type: Opaque
+stringData:
+  # Override this secret with actual credentials before deploying
+  {{ .Values.connector.postgresPasswordKey }}: "debezium_password_change_me"
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnector
+metadata:
+  name: debezium-outbox-connector
+  namespace: {{ .Values.namespace }}
+  labels:
+    strimzi.io/cluster: debezium-connect
+spec:
+  class: io.debezium.connector.postgresql.PostgresConnector
+  tasksMax: 1
+  config:
+    connector.class: io.debezium.connector.postgresql.PostgresConnector
+    tasks.max: "1"
+    database.hostname: {{ .Values.connector.postgresHost | quote }}
+    database.port: {{ .Values.connector.postgresPort | quote }}
+    database.user: {{ .Values.connector.postgresUser | quote }}
+    database.password: {{ .Values.connector.postgresPassword | default "debezium_password_change_me" | quote }}
+    database.dbname: {{ .Values.connector.postgresDatabase | quote }}
+    topic.prefix: {{ .Values.connector.postgresDatabase | quote }}
+    schema.include.list: {{ .Values.connector.postgresSchema | quote }}
+    table.include.list: "{{ .Values.connector.postgresSchema }}.{{ .Values.connector.outboxTable }}"
+    plugin.name: pgoutput
+    publication.name: {{ .Values.connector.publicationName | quote }}
+    slot.name: {{ .Values.connector.slotName | quote }}
+    # Outbox Event Router SMT
+    transforms: outbox
+    transforms.outbox.type: io.debezium.transforms.outbox.EventRouter
+    transforms.outbox.table.field.event.id: id
+    transforms.outbox.table.field.event.key: aggregate_id
+    transforms.outbox.table.field.event.payload: payload
+    transforms.outbox.table.field.event.type: event_type
+    transforms.outbox.route.by.field: aggregate_type
+    transforms.outbox.route.topic.replacement: "outbox.events.${routedByValue}"
+    transforms.outbox.table.expand.json.payload: "true"
+    # Heartbeat interval to keep replication slot active during idle periods
+    heartbeat.interval.ms: "10000"
+    # Prevent WAL bloat if consumer is behind
+    snapshot.mode: never
+    decimal.handling.mode: string
+    time.precision.mode: connect
+{{- end }}

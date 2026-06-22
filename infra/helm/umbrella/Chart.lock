@@ -1,0 +1,15 @@
+dependencies:
+- name: kafka
+  repository: file://../kafka
+  version: 0.1.0
+- name: postgres
+  repository: file://../postgres
+  version: 0.1.0
+- name: monitoring
+  repository: file://../monitoring
+  version: 0.1.0
+- name: kafka-ui
+  repository: file://../kafka-ui
+  version: 0.1.0
+digest: sha256:c2a3cd1e10be3ce4e38d8c31eb5800c9ea8b4f9adefb5b705557dfe986af6745
+generated: "2026-06-22T21:34:28.764582237+06:00"

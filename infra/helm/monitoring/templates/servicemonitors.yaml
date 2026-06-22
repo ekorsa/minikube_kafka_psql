@@ -1,0 +1,87 @@
+# PodMonitor for Strimzi Kafka JMX metrics
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: strimzi-kafka
+  namespace: {{ .Values.namespace }}
+  labels:
+    release: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.kafkaNamespace }}
+  selector:
+    matchLabels:
+      strimzi.io/kind: Kafka
+  podMetricsEndpoints:
+    - path: /metrics
+      port: tcp-prometheus
+      scheme: http
+      interval: 30s
+      scrapeTimeout: 10s
+---
+# PodMonitor for Strimzi KafkaConnect JMX metrics
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: strimzi-kafka-connect
+  namespace: {{ .Values.namespace }}
+  labels:
+    release: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.kafkaNamespace }}
+  selector:
+    matchLabels:
+      strimzi.io/kind: KafkaConnect
+  podMetricsEndpoints:
+    - path: /metrics
+      port: tcp-prometheus
+      scheme: http
+      interval: 30s
+      scrapeTimeout: 10s
+---
+# PodMonitor for Strimzi Kafka Exporter (consumer group lag)
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: strimzi-kafka-exporter
+  namespace: {{ .Values.namespace }}
+  labels:
+    release: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.kafkaNamespace }}
+  selector:
+    matchLabels:
+      strimzi.io/name: kafka-cluster-kafka-exporter
+  podMetricsEndpoints:
+    - path: /metrics
+      port: metrics
+      scheme: http
+      interval: 30s
+      scrapeTimeout: 10s
+---
+# PodMonitor for CloudNativePG built-in exporter
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cnpg-postgres
+  namespace: {{ .Values.namespace }}
+  labels:
+    release: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.postgresNamespace }}
+  selector:
+    matchLabels:
+      cnpg.io/cluster: postgres-cluster
+  podMetricsEndpoints:
+    - path: /metrics
+      port: metrics
+      scheme: http
+      interval: 30s
+      scrapeTimeout: 10s

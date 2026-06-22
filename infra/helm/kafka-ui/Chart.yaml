@@ -1,0 +1,11 @@
+apiVersion: v2
+name: kafka-ui
+description: Provectus Kafka UI for browsing topics, partitions, and consumer groups
+type: application
+version: 0.1.0
+
+dependencies:
+  - name: kafka-ui
+    version: "0.7.6"
+    repository: "https://provectus.github.io/kafka-ui-charts"
+    alias: provectus-kafka-ui

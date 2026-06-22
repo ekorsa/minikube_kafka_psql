@@ -1,0 +1,33 @@
+namespace: kafka-ui
+
+provectus-kafka-ui:
+  yamlApplicationConfig:
+    kafka:
+      clusters:
+        - name: kafka-cluster
+          bootstrapServers: kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
+          kafkaConnect:
+            - name: debezium-connect
+              address: http://debezium-connect-connect-api.kafka.svc.cluster.local:8083
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  # Uncomment to expose via Ingress
+  # ingress:
+  #   enabled: true
+  #   className: nginx
+  #   hosts:
+  #     - host: kafka-ui.local
+  #       paths:
+  #         - path: /
+  #           pathType: Prefix

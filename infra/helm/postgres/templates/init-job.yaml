@@ -1,0 +1,107 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-migrations-sql
+  namespace: {{ .Values.namespace }}
+data:
+  001_init_schema.sql: |
+    CREATE TABLE IF NOT EXISTS orders (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        customer_id UUID NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'PENDING',
+        total_amount NUMERIC(12,2) NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+  002_outbox.sql: |
+    CREATE TABLE IF NOT EXISTS outbox (
+        id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        aggregate_type TEXT NOT NULL,
+        aggregate_id   TEXT NOT NULL,
+        event_type     TEXT NOT NULL,
+        payload        JSONB NOT NULL,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_publication WHERE pubname = 'debezium_publication'
+      ) THEN
+        CREATE PUBLICATION debezium_publication FOR TABLE outbox;
+      END IF;
+    END$$;
+
+    GRANT SELECT ON outbox TO debezium;
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-migrations
+  namespace: {{ .Values.namespace }}
+  annotations:
+    # Re-run by deleting the job: kubectl delete job postgres-migrations -n postgres
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Wait for Postgres primary to be ready before running migrations
+        - name: wait-for-postgres
+          image: {{ .Values.migrations.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until pg_isready -h postgres-cluster-rw.{{ .Values.namespace }}.svc.cluster.local -p 5432 -U {{ .Values.owner }}; do
+                echo "Waiting for PostgreSQL primary..."
+                sleep 5
+              done
+              echo "PostgreSQL is ready"
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-app-credentials
+                  key: password
+      containers:
+        - name: run-migrations
+          image: {{ .Values.migrations.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              PGHOST=postgres-cluster-rw.{{ .Values.namespace }}.svc.cluster.local
+              PGPORT=5432
+              PGUSER={{ .Values.owner }}
+              PGDATABASE={{ .Values.database }}
+
+              echo "Running 001_init_schema.sql..."
+              psql -h $PGHOST -p $PGPORT -U $PGUSER -d $PGDATABASE -f /sql/001_init_schema.sql
+
+              echo "Running 002_outbox.sql..."
+              psql -h $PGHOST -p $PGPORT -U $PGUSER -d $PGDATABASE -f /sql/002_outbox.sql
+
+              echo "Migrations complete."
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-app-credentials
+                  key: password
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+      volumes:
+        - name: sql
+          configMap:
+            name: {{ .Values.migrations.sqlConfigMap }}
+{{- end }}

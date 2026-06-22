@@ -1,0 +1,74 @@
+# Dev profile: optimized for local minikube/kind on 2 CPU / 18GB RAM machine
+# Recommended: minikube start --memory=8192 --cpus=2
+
+kafka:
+  enabled: true
+  replicas: 1
+  storage:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  topicReplicationFactor: 1
+  topicMinInSyncReplicas: 1
+  connect:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 800m
+        memory: 1Gi
+  kafkaExporter:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+postgres:
+  enabled: true
+  instances: 1
+  storage:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+monitoring:
+  enabled: false
+  kube-prometheus-stack:
+    alertmanager:
+      enabled: false
+    prometheus:
+      prometheusSpec:
+        retention: 6h
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+    grafana:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+
+kafkaUi:
+  enabled: false

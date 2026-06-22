@@ -1,0 +1,55 @@
+namespace: monitoring
+
+kube-prometheus-stack:
+  grafana:
+    adminPassword: "admin"  # Change for production
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard
+        labelValue: "1"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  prometheus:
+    prometheusSpec:
+      retention: 15d
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+      # Allow scraping from all namespaces
+      podMonitorNamespaceSelector: {}
+      podMonitorSelector: {}
+      serviceMonitorNamespaceSelector: {}
+      serviceMonitorSelector: {}
+
+  alertmanager:
+    enabled: true
+    alertmanagerSpec:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+  # Disable components not needed in this stack
+  kubeStateMetrics:
+    enabled: true
+  nodeExporter:
+    enabled: true
+
+# Kafka namespace where Strimzi runs
+kafkaNamespace: kafka
+# Postgres namespace where CNPG runs
+postgresNamespace: postgres

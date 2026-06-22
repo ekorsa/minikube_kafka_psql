@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-app-credentials
+  namespace: {{ .Values.namespace }}
+type: kubernetes.io/basic-auth
+stringData:
+  username: {{ .Values.owner }}
+  # Change before production use
+  password: "appuser_password_change_me"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.debeziumPasswordSecret }}
+  namespace: {{ .Values.namespace }}
+type: kubernetes.io/basic-auth
+stringData:
+  username: {{ .Values.debeziumUser }}
+  # Change before production use
+  password: "debezium_password_change_me"
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-cluster
+  namespace: {{ .Values.namespace }}
+spec:
+  instances: {{ .Values.instances }}
+  imageName: {{ .Values.imageName }}
+
+  postgresql:
+    parameters:
+      wal_level: logical
+      max_replication_slots: "10"
+      max_wal_senders: "10"
+
+  bootstrap:
+    initdb:
+      database: {{ .Values.database }}
+      owner: {{ .Values.owner }}
+      secret:
+        name: postgres-app-credentials
+      postInitSQL:
+        - CREATE USER {{ .Values.debeziumUser }} WITH REPLICATION LOGIN PASSWORD 'debezium_password_change_me';
+        - GRANT SELECT ON ALL TABLES IN SCHEMA public TO {{ .Values.debeziumUser }};
+        - ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {{ .Values.debeziumUser }};
+
+  storage:
+    size: {{ .Values.storage.size }}
+    {{- if .Values.storage.storageClass }}
+    storageClass: {{ .Values.storage.storageClass }}
+    {{- end }}
+
+  resources:
+    requests:
+      cpu: {{ .Values.resources.requests.cpu }}
+      memory: {{ .Values.resources.requests.memory }}
+    limits:
+      cpu: {{ .Values.resources.limits.cpu }}
+      memory: {{ .Values.resources.limits.memory }}
+
+  monitoring:
+    enablePodMonitor: true
+
+  # Backup configuration placeholder (configure for production)
+  # backup:
+  #   barmanObjectStore:
+  #     destinationPath: s3://your-bucket/postgres
+  #     s3Credentials: ...

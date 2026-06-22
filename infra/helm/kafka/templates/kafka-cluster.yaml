@@ -1,0 +1,176 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: kafka-cluster
+  namespace: {{ .Values.namespace }}
+spec:
+  kafka:
+    version: 3.7.0
+    replicas: {{ .Values.replicas }}
+    listeners:
+      - name: plain
+        port: {{ .Values.listeners.plain.port }}
+        type: internal
+        tls: false
+      {{- if .Values.listeners.external.enabled }}
+      - name: external
+        port: 9094
+        type: {{ .Values.listeners.external.type }}
+        tls: false
+      {{- end }}
+    config:
+      offsets.topic.replication.factor: {{ .Values.topicReplicationFactor }}
+      transaction.state.log.replication.factor: {{ .Values.topicReplicationFactor }}
+      transaction.state.log.min.isr: {{ .Values.topicMinInSyncReplicas }}
+      default.replication.factor: {{ .Values.topicReplicationFactor }}
+      min.insync.replicas: {{ .Values.topicMinInSyncReplicas }}
+      inter.broker.protocol.version: "3.7"
+      log.message.format.version: "3.7"
+    {{- if .Values.metricsEnabled }}
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          name: kafka-metrics-config
+          key: kafka-metrics-config.yml
+    {{- end }}
+    storage:
+      type: persistent-claim
+      size: {{ .Values.storage.size }}
+      {{- if .Values.storage.storageClass }}
+      class: {{ .Values.storage.storageClass }}
+      {{- end }}
+      deleteClaim: false
+    resources:
+      requests:
+        cpu: {{ .Values.resources.requests.cpu }}
+        memory: {{ .Values.resources.requests.memory }}
+      limits:
+        cpu: {{ .Values.resources.limits.cpu }}
+        memory: {{ .Values.resources.limits.memory }}
+    readinessProbe:
+      initialDelaySeconds: 60
+      periodSeconds: 20
+      timeoutSeconds: 10
+      failureThreshold: 6
+    livenessProbe:
+      initialDelaySeconds: 120
+      periodSeconds: 30
+      timeoutSeconds: 15
+      failureThreshold: 6
+    template:
+      pod:
+        terminationGracePeriodSeconds: 60
+  zookeeper:
+    replicas: {{ min .Values.replicas 3 }}
+    storage:
+      type: persistent-claim
+      size: 2Gi
+      {{- if .Values.storage.storageClass }}
+      class: {{ .Values.storage.storageClass }}
+      {{- end }}
+      deleteClaim: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    readinessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 15
+    livenessProbe:
+      initialDelaySeconds: 60
+      periodSeconds: 20
+  {{- if .Values.kafkaExporter.enabled }}
+  kafkaExporter:
+    topicRegex: ".*"
+    groupRegex: ".*"
+    resources:
+      requests:
+        cpu: {{ .Values.kafkaExporter.resources.requests.cpu }}
+        memory: {{ .Values.kafkaExporter.resources.requests.memory }}
+      limits:
+        cpu: {{ .Values.kafkaExporter.resources.limits.cpu }}
+        memory: {{ .Values.kafkaExporter.resources.limits.memory }}
+    readinessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 15
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 15
+  {{- end }}
+  entityOperator:
+    topicOperator:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+    # userOperator omitted — KafkaUser CRs not used in this stand
+---
+{{- if .Values.metricsEnabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-metrics-config
+  namespace: {{ .Values.namespace }}
+data:
+  kafka-metrics-config.yml: |
+    lowercaseOutputName: true
+    rules:
+      - pattern: "kafka.server<type=(.+), name=(.+), clientId=(.+), topic=(.+), partition=(.*)><>Value"
+        name: "kafka_server_$1_$2"
+        type: GAUGE
+        labels:
+          clientId: "$3"
+          topic: "$4"
+          partition: "$5"
+      - pattern: "kafka.server<type=(.+), name=(.+), clientId=(.+), brokerHost=(.+), brokerPort=(.+)><>Value"
+        name: "kafka_server_$1_$2"
+        type: GAUGE
+        labels:
+          clientId: "$3"
+          broker: "$4:$5"
+      - pattern: "kafka.server<type=ReplicaManager, name=(.+)><>(Value|OneMinuteRate)"
+        name: "kafka_server_replicamanager_$1"
+        type: GAUGE
+      - pattern: "kafka.controller<type=KafkaController, name=(.+)><>(Value)"
+        name: "kafka_controller_$1"
+        type: GAUGE
+      - pattern: "kafka.server<type=BrokerTopicMetrics, name=(.+), topic=(.+)><>(Count|OneMinuteRate)"
+        name: "kafka_server_brokertopicmetrics_$1_total"
+        type: COUNTER
+        labels:
+          topic: "$2"
+      - pattern: "kafka.server<type=BrokerTopicMetrics, name=(.+)><>(Count|OneMinuteRate)"
+        name: "kafka_server_brokertopicmetrics_$1_total"
+        type: COUNTER
+      - pattern: "kafka.network<type=RequestMetrics, name=(.+), request=(.+)><>(Count|OneMinuteRate)"
+        name: "kafka_network_requestmetrics_$1_total"
+        type: COUNTER
+        labels:
+          request: "$2"
+      - pattern: "kafka.server<type=(.+), name=(.+)><>(Value|Count|OneMinuteRate)"
+        name: "kafka_server_$1_$2"
+        type: UNTYPED
+      - pattern: "java.lang<type=GarbageCollector, name=(.+)><>CollectionCount"
+        name: "jvm_gc_collection_count_total"
+        type: COUNTER
+        labels:
+          gc: "$1"
+      - pattern: "java.lang<type=GarbageCollector, name=(.+)><>CollectionTime"
+        name: "jvm_gc_collection_time_ms_total"
+        type: COUNTER
+        labels:
+          gc: "$1"
+      - pattern: "java.lang<type=Memory><>(HeapMemoryUsage|NonHeapMemoryUsage)"
+        name: "jvm_memory_bytes_used"
+        type: GAUGE
+        labels:
+          area: "$1"
+        valueFactor: 1
+{{- end }}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: postgres
+description: CloudNativePG PostgreSQL cluster with logical replication for Debezium CDC
+type: application
+version: 0.1.0
+appVersion: "16.3"

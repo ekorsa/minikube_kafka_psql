@@ -1,0 +1,31 @@
+kafka:
+  enabled: true
+  replicas: 3
+  storage:
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+postgres:
+  enabled: true
+  instances: 2
+  storage:
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+monitoring:
+  enabled: true
+
+kafkaUi:
+  enabled: true

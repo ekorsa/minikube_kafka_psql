@@ -1,0 +1,31 @@
+namespace: postgres
+
+instances: 2
+imageName: ghcr.io/cloudnative-pg/postgresql:16.3
+
+storage:
+  size: 10Gi
+  storageClass: ""
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Application database
+database: appdb
+owner: appuser
+
+# Debezium replication user
+debeziumUser: debezium
+debeziumPasswordSecret: debezium-credentials
+
+# SQL migrations job
+migrations:
+  enabled: true
+  image: postgres:16
+  sqlConfigMap: postgres-migrations-sql
+  activeDeadlineSeconds: 300

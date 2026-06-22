@@ -1,0 +1,91 @@
+namespace: kafka
+
+# Kafka cluster
+replicas: 3
+topicReplicationFactor: 3
+topicMinInSyncReplicas: 2
+
+storage:
+  size: 10Gi
+  storageClass: ""  # use cluster default
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+# Listeners
+listeners:
+  plain:
+    port: 9092
+  external:
+    enabled: false
+    type: NodePort
+
+# JMX / metrics
+metricsEnabled: true
+
+# KafkaConnect
+connect:
+  replicas: 1
+  # Option 1: pre-built Debezium image (recommended for local dev)
+  # Strimzi-compatible image: quay.io/strimzi/kafka:0.41.0-kafka-3.7.0 base
+  # + Debezium postgres plugin from quay.io/debezium/connect:2.7.3.Final
+  # Build: eval $(minikube docker-env) && docker build -t strimzi-debezium-postgres:2.7.3 infra/docker/debezium-connect/
+  # imagePullPolicy defaults to IfNotPresent (non-latest tag) — minikube finds it locally
+  image: strimzi-debezium-postgres:2.7.3
+  # Option 2: use Strimzi build mechanism — set image to "" and configure build section
+  # build:
+  #   output:
+  #     type: docker
+  #     image: your-registry/debezium-connect:latest
+  #   plugins:
+  #     - name: debezium-postgres
+  #       artifacts:
+  #         - type: tgz
+  #           url: https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgresql/2.7.0.Final/debezium-connector-postgresql-2.7.0.Final-plugin.tar.gz
+  resources:
+    requests:
+      cpu: 300m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+# Outbox topics
+topics:
+  - name: outbox.events.orders
+    partitions: 3
+    replicationFactor: 3
+    config:
+      retention.ms: "604800000"  # 7 days
+      cleanup.policy: delete
+
+# Kafka Exporter — exposes consumer group lag metrics to Prometheus
+kafkaExporter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Debezium connector
+connector:
+  enabled: true
+  postgresHost: "postgres-cluster-rw.postgres.svc.cluster.local"
+  postgresPort: 5432
+  postgresUser: "debezium"
+  postgresPasswordSecret: "debezium-credentials"
+  postgresPasswordKey: "password"
+  postgresDatabase: "appdb"
+  postgresSchema: "public"
+  outboxTable: "outbox"
+  postgresPassword: "debezium_password_change_me"
+  slotName: "debezium_outbox"
+  publicationName: "debezium_publication"

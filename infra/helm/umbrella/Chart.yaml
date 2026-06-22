@@ -1,0 +1,24 @@
+apiVersion: v2
+name: umbrella
+description: Umbrella chart for Kafka + PostgreSQL outbox + monitoring stack
+type: application
+version: 0.1.0
+appVersion: "1.0"
+
+dependencies:
+  - name: kafka
+    version: "0.1.0"
+    repository: "file://../kafka"
+    condition: kafka.enabled
+  - name: postgres
+    version: "0.1.0"
+    repository: "file://../postgres"
+    condition: postgres.enabled
+  - name: monitoring
+    version: "0.1.0"
+    repository: "file://../monitoring"
+    condition: monitoring.enabled
+  - name: kafka-ui
+    version: "0.1.0"
+    repository: "file://../kafka-ui"
+    condition: kafkaUi.enabled
