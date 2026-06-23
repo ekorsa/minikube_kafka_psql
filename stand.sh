@@ -528,7 +528,7 @@ cmd_pf() {
             local url="http://localhost:9090"
             ;;
         kafka-ui|ui)
-            local ns=default svc_grep="kafka-ui" lport=8080 rport=80
+            local ns=default svc_grep="kafka-ui" lport=8080 rport=8080
             local url="http://localhost:8080"
             ;;
         connect|debezium)
