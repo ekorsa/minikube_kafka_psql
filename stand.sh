@@ -646,6 +646,227 @@ cmd_destroy() {
     log_done
 }
 
+# ── doctor ───────────────────────────────────────────────────────────────────
+cmd_doctor() {
+    local ok=0 warn=0 fail=0
+
+    _pass()  { echo -e "  ${GREEN}✔${NC}  $*"; ok=$((ok+1)); }
+    _warn()  { echo -e "  ${YELLOW}⚠${NC}  $*"; warn=$((warn+1)); }
+    _fail()  { echo -e "  ${RED}✘${NC}  $*"; fail=$((fail+1)); }
+    _info()  { echo -e "      ${BLUE}↳${NC} $*"; }
+    _head()  { echo -e "\n${BOLD}$*${NC}"; }
+
+    # ── 1. minikube ────────────────────────────────────────────────────────────
+    _head "[ 1/5 ] minikube"
+    local mk_status
+    mk_status=$(minikube status --format='{{.Host}}' 2>/dev/null || echo "NotFound")
+    if [[ "$mk_status" == "Running" ]]; then
+        _pass "minikube Running ($(minikube ip 2>/dev/null))"
+    else
+        _fail "minikube не запущен (статус: $mk_status)"
+        _info "Запусти: ./stand.sh start"
+        echo; _summary $ok $warn $fail; return
+    fi
+
+    local disk_pct
+    disk_pct=$(minikube ssh "df / | awk 'NR==2{print \$5}'" 2>/dev/null | tr -d ' %\r\n')
+    if [[ -n "$disk_pct" ]]; then
+        if   (( disk_pct >= 90 )); then _fail "Диск minikube ${disk_pct}% — критично"
+        elif (( disk_pct >= 75 )); then _warn "Диск minikube ${disk_pct}% — следи"
+        else                            _pass "Диск minikube ${disk_pct}%"
+        fi
+    fi
+
+    # ── 2. PostgreSQL ──────────────────────────────────────────────────────────
+    _head "[ 2/5 ] PostgreSQL (CNPG)"
+    local pg_pod pg_phase
+    pg_pod=$(kubectl get pod -n postgres -l cnpg.io/instanceRole=primary \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+    if [[ -z "$pg_pod" ]]; then
+        _fail "Primary pod не найден"
+    else
+        local pg_ready
+        pg_ready=$(kubectl get pod -n postgres "$pg_pod" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [[ "$pg_ready" == "True" ]]; then
+            _pass "Primary pod $pg_pod Ready"
+        else
+            _fail "Primary pod $pg_pod не Ready"
+            _info "kubectl logs -n postgres $pg_pod --tail=20"
+        fi
+
+        # Replication slot
+        local slot_info
+        slot_info=$(kubectl exec -n postgres "$pg_pod" -- \
+            bash -c "PGPASSWORD='appuser_password_change_me' psql -h localhost \
+            -U appuser -d appdb -tAc \
+            \"SELECT active::text || '|' || coalesce(pg_size_pretty(
+                pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)), '0')
+              FROM pg_replication_slots WHERE slot_name='debezium_outbox';\"" \
+            2>/dev/null | tr -d ' ')
+
+        if [[ -z "$slot_info" ]]; then
+            _warn "Replication slot 'debezium_outbox' не найден"
+            _info "Debezium создаст его при первом подключении"
+        else
+            local slot_active slot_lag
+            slot_active=$(echo "$slot_info" | cut -d'|' -f1)
+            slot_lag=$(echo "$slot_info" | cut -d'|' -f2)
+            if [[ "$slot_active" == "true" ]]; then
+                _pass "Replication slot активен, WAL lag: $slot_lag"
+            else
+                _warn "Replication slot неактивен (Debezium отключён), WAL lag: $slot_lag"
+                _info "WAL накапливается пока коннектор не reconnect'нется"
+            fi
+        fi
+
+        # Кол-во событий в outbox
+        local outbox_count
+        outbox_count=$(kubectl exec -n postgres "$pg_pod" -- \
+            bash -c "PGPASSWORD='appuser_password_change_me' psql -h localhost \
+            -U appuser -d appdb -tAc 'SELECT count(*) FROM outbox;'" \
+            2>/dev/null | tr -d ' ')
+        [[ -n "$outbox_count" ]] && _pass "Строк в outbox: $outbox_count"
+    fi
+
+    # ── 3. Kafka broker ────────────────────────────────────────────────────────
+    _head "[ 3/5 ] Kafka broker (Strimzi)"
+    local kafka_ready
+    kafka_ready=$(kubectl get kafka kafka-cluster -n kafka \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [[ "$kafka_ready" == "True" ]]; then
+        _pass "Kafka CR Ready"
+    else
+        _fail "Kafka CR не Ready"
+        _info "kubectl describe kafka kafka-cluster -n kafka"
+    fi
+
+    local broker_ready
+    broker_ready=$(kubectl get pod -n kafka kafka-cluster-kafka-0 \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [[ "$broker_ready" == "True" ]]; then
+        _pass "kafka-cluster-kafka-0 Ready"
+    else
+        _fail "kafka-cluster-kafka-0 не Ready"
+        _info "kubectl logs -n kafka kafka-cluster-kafka-0 -c kafka --tail=30 | grep -iE 'ERROR|FATAL'"
+    fi
+
+    # Under-replicated partitions
+    local urp
+    urp=$(kubectl exec -n kafka kafka-cluster-kafka-0 -c kafka -- \
+        bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+        --describe --under-replicated-partitions 2>/dev/null | grep -c "Topic:" || true)
+    if [[ "$urp" -eq 0 ]]; then
+        _pass "Under-replicated partitions: 0"
+    else
+        _fail "Under-replicated partitions: $urp — данные под угрозой"
+        _info "kubectl logs -n kafka kafka-cluster-kafka-0 -c kafka | grep -i 'UnderReplicated'"
+    fi
+
+    # Offsets в топике
+    local offsets
+    offsets=$(kubectl exec -n kafka kafka-cluster-kafka-0 -c kafka -- \
+        bin/kafka-get-offsets.sh \
+        --bootstrap-server localhost:9092 \
+        --topic outbox.events.orders 2>/dev/null \
+        | awk -F: '{sum+=$3} END{print sum+0}' || echo "?")
+    _pass "Сообщений в outbox.events.orders: $offsets"
+
+    # ── 4. Debezium / KafkaConnect ─────────────────────────────────────────────
+    _head "[ 4/5 ] Debezium / KafkaConnect"
+    local connect_ready
+    connect_ready=$(kubectl get kafkaconnect debezium-connect -n kafka \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [[ "$connect_ready" == "True" ]]; then
+        _pass "KafkaConnect Ready"
+    else
+        _fail "KafkaConnect не Ready"
+        _info "kubectl logs -n kafka debezium-connect-connect-0 | grep -iE 'ERROR|FATAL' | tail -5"
+    fi
+
+    local conn_state task_state
+    conn_state=$(kubectl get kafkaconnector debezium-outbox-connector -n kafka \
+        -o jsonpath='{.status.connectorStatus.connector.state}' 2>/dev/null)
+    task_state=$(kubectl get kafkaconnector debezium-outbox-connector -n kafka \
+        -o jsonpath='{.status.connectorStatus.tasks[0].state}' 2>/dev/null)
+
+    if [[ "$conn_state" == "RUNNING" ]]; then
+        _pass "Connector: $conn_state"
+    else
+        _fail "Connector: ${conn_state:-UNKNOWN}"
+    fi
+
+    if [[ "$task_state" == "RUNNING" ]]; then
+        _pass "Task 0: $task_state"
+    else
+        _fail "Task 0: ${task_state:-UNKNOWN}"
+        local trace
+        trace=$(kubectl get kafkaconnector debezium-outbox-connector -n kafka \
+            -o jsonpath='{.status.connectorStatus.tasks[0].trace}' 2>/dev/null \
+            | grep -v "^\s*at " | head -3)
+        [[ -n "$trace" ]] && _info "$trace"
+        _info "Перезапустить: kubectl exec -n kafka debezium-connect-connect-0 -- \\"
+        _info "  curl -s -X POST http://localhost:8083/connectors/debezium-outbox-connector/tasks/0/restart"
+    fi
+
+    # ── 5. End-to-end: событие → kafka ─────────────────────────────────────────
+    _head "[ 5/5 ] End-to-end проверка"
+    if [[ "$pg_ready" == "True" && "$task_state" == "RUNNING" ]]; then
+        local before_offset
+        before_offset=$(kubectl exec -n kafka kafka-cluster-kafka-0 -c kafka -- \
+            bin/kafka-get-offsets.sh \
+            --bootstrap-server localhost:9092 \
+            --topic outbox.events.orders 2>/dev/null \
+            | awk -F: '{sum+=$3} END{print sum+0}')
+
+        # Вставляем тестовую запись
+        local test_id="doctor-$(date +%s)"
+        kubectl exec -n postgres "$pg_pod" -- \
+            bash -c "PGPASSWORD='appuser_password_change_me' psql -h localhost \
+            -U appuser -d appdb -c \
+            \"INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload)
+              VALUES ('orders','$test_id','DoctorCheck','{\\\"check\\\":\\\"ok\\\"}');\"" \
+            &>/dev/null
+
+        sleep 8
+
+        local after_offset
+        after_offset=$(kubectl exec -n kafka kafka-cluster-kafka-0 -c kafka -- \
+            bin/kafka-get-offsets.sh \
+            --bootstrap-server localhost:9092 \
+            --topic outbox.events.orders 2>/dev/null \
+            | awk -F: '{sum+=$3} END{print sum+0}')
+
+        if (( after_offset > before_offset )); then
+            _pass "Событие прошло в Kafka за ~8s (offset: $before_offset → $after_offset)"
+        else
+            _fail "Событие НЕ попало в Kafka за 8s (offset не изменился: $after_offset)"
+            _info "Проверь логи Debezium: kubectl logs -n kafka debezium-connect-connect-0 | grep ERROR | tail -5"
+        fi
+    else
+        _warn "E2E пропущен — PostgreSQL или коннектор недоступны"
+    fi
+
+    # ── итог ──────────────────────────────────────────────────────────────────
+    _summary $ok $warn $fail
+}
+
+_summary() {
+    local ok=$1 warn=$2 fail=$3
+    echo
+    echo -e "${BOLD}═══ Итог ════════════════════════════════════════════════${NC}"
+    if   (( fail > 0 )); then
+        echo -e "  ${RED}${BOLD}ПРОБЛЕМЫ НАЙДЕНЫ${NC}  ✔ $ok  ⚠ $warn  ✘ $fail"
+        echo -e "  Подробности: ${CYAN}TROUBLESHOOTING.md${NC}"
+    elif (( warn > 0 )); then
+        echo -e "  ${YELLOW}${BOLD}ПРЕДУПРЕЖДЕНИЯ${NC}    ✔ $ok  ⚠ $warn"
+    else
+        echo -e "  ${GREEN}${BOLD}ВСЁ ХОРОШО${NC}        ✔ $ok"
+    fi
+    echo
+}
+
 # ── парсинг команды ───────────────────────────────────────────────────────────
 usage() {
     cat <<EOF
@@ -667,6 +888,7 @@ usage() {
   pf <сервис> [--bg] Port-forward: grafana, prometheus, kafka-ui, connect
                      --bg: запустить в фоне (не блокирует терминал)
   pf stop [сервис]   Остановить фоновый port-forward (все или конкретный)
+  doctor             Диагностика всех компонентов + e2e проверка
 EOF
 }
 
@@ -710,6 +932,7 @@ main() {
         send)        cmd_send "$@" ;;
         tail)        cmd_tail "$@" ;;
         monitoring)  cmd_monitoring "$@" ;;
+        doctor)      cmd_doctor ;;
         pf)
             if [[ "${1:-}" == "stop" ]]; then
                 cmd_pf_stop "${2:-}"
