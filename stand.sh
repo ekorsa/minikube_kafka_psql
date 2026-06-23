@@ -169,7 +169,7 @@ build_helm_deps() {
     # Сначала чарты с внешними зависимостями, потом umbrella
     for chart in monitoring kafka-ui umbrella; do
         log_info "helm dependency build $chart"
-        helm dependency build "$SCRIPT_DIR/infra/helm/$chart" --quiet
+        helm dependency build "$SCRIPT_DIR/infra/helm/$chart" 2>&1 | grep -v "^Saving\|^Deleting" || true
     done
     log_done
 }
@@ -448,6 +448,179 @@ for line in sys.stdin:
 "
 }
 
+# ── включить / выключить мониторинг на живом стенде ──────────────────────────
+cmd_monitoring() {
+    local action="${1:-on}"
+    case "$action" in
+        on|enable)   local enabled=true  label="Включаю мониторинг" ;;
+        off|disable) local enabled=false label="Выключаю мониторинг" ;;
+        *) die "monitoring: укажи on или off" ;;
+    esac
+
+    local current_status
+    current_status=$(helm status "$HELM_RELEASE" --namespace default 2>/dev/null \
+        | grep STATUS: | awk '{print $2}' || echo "not-installed")
+    [[ "$current_status" == "not-installed" ]] && \
+        die "Стенд не запущен — сначала './stand.sh start'"
+
+    # Узнаём текущее состояние kafka-ui чтобы не сбросить его
+    local current_ui
+    current_ui=$(helm get values "$HELM_RELEASE" --namespace default -o json 2>/dev/null \
+        | python3 -c "import sys,json; v=json.load(sys.stdin); print(str(v.get('kafkaUi',{}).get('enabled',False)).lower())" \
+        2>/dev/null || echo "false")
+
+    log_step "$label"
+    kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f - &>/dev/null
+    build_helm_deps
+
+    if [[ "$enabled" == "true" ]]; then
+        log_info "Установка CRDs Prometheus Operator (требуется перед первым включением)"
+        local kps_tgz="$SCRIPT_DIR/infra/helm/monitoring/charts/kube-prometheus-stack-58.4.0.tgz"
+        if [[ -f "$kps_tgz" ]]; then
+            helm show crds "$kps_tgz" | kubectl apply --server-side -f - 2>&1 \
+                | grep -E "created|configured|unchanged|error" | head -10
+        else
+            log_warn "kube-prometheus-stack tgz не найден: $kps_tgz (пропускаю установку CRDs)"
+        fi
+    fi
+
+    helm upgrade "$HELM_RELEASE" "$HELM_CHART" \
+        --values "$HELM_VALUES" \
+        --values "$HELM_VALUES_DEV" \
+        --set "monitoring.enabled=${enabled}" \
+        --set "kafkaUi.enabled=${current_ui}" \
+        --namespace default \
+        --timeout 10m \
+        --wait
+    log_done
+
+    if [[ "$enabled" == "true" ]]; then
+        echo
+        echo -e "  Grafana    → ${CYAN}./stand.sh pf grafana${NC}    (admin / admin)"
+        echo -e "  Prometheus → ${CYAN}./stand.sh pf prometheus${NC}"
+    fi
+}
+
+# ── port-forward ──────────────────────────────────────────────────────────────
+cmd_pf() {
+    local target="${1:-}"
+    local bg=false
+
+    # Разбираем аргументы: ./stand.sh pf grafana [--bg]
+    local args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --bg) bg=true ;;
+            *)    args+=("$arg") ;;
+        esac
+    done
+    target="${args[0]:-}"
+
+    # Таблица: target → namespace, svc-selector, local-port, remote-port, url
+    # svc-selector — часть имени сервиса (grep)
+    case "$target" in
+        grafana)
+            local ns=default svc_grep="grafana" lport=3000 rport=80
+            local url="http://localhost:3000  (admin / admin)"
+            ;;
+        prometheus)
+            local ns=default svc_grep="kube-promethe-prometheus$" lport=9090 rport=9090
+            local url="http://localhost:9090"
+            ;;
+        kafka-ui|ui)
+            local ns=default svc_grep="kafka-ui" lport=8080 rport=80
+            local url="http://localhost:8080"
+            ;;
+        connect|debezium)
+            local ns=kafka svc_grep="connect-api" lport=8083 rport=8083
+            local url="http://localhost:8083/connectors"
+            ;;
+        *)
+            cat <<EOF
+Использование: $(basename "$0") pf <сервис>
+
+Доступные сервисы:
+  grafana     Grafana UI          → http://localhost:3000  (admin / admin)
+  prometheus  Prometheus UI       → http://localhost:9090
+  kafka-ui    Kafka UI            → http://localhost:8080
+  connect     Debezium REST API   → http://localhost:8083/connectors
+EOF
+            return 0
+            ;;
+    esac
+
+    local svc
+    svc=$(kubectl get svc -n "$ns" --no-headers 2>/dev/null \
+        | awk '{print $1}' | grep -E "$svc_grep" | head -1 || true)
+
+    if [[ -z "$svc" ]]; then
+        log_err "Сервис '$target' не найден в namespace '$ns'"
+        if [[ "$target" == "grafana" || "$target" == "prometheus" ]]; then
+            echo -e "  Подсказка: мониторинг не включён → ${CYAN}./stand.sh monitoring on${NC}"
+        elif [[ "$target" == "kafka-ui" || "$target" == "ui" ]]; then
+            echo -e "  Подсказка: kafka-ui не включён → ${CYAN}./stand.sh start --with-ui${NC}"
+        fi
+        return 1
+    fi
+
+    log_step "Port-forward: $svc ($ns) → localhost:$lport"
+    echo -e "  Открыть: ${CYAN}${url}${NC}"
+
+    if [[ "$bg" == "true" ]]; then
+        local pidfile="/tmp/stand-pf-${target}.pid"
+        # Убиваем предыдущий процесс для этого сервиса, если был
+        if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+            kill "$(cat "$pidfile")" 2>/dev/null
+            log_info "Предыдущий port-forward ($target) остановлен"
+        fi
+        kubectl port-forward -n "$ns" "svc/$svc" "${lport}:${rport}" \
+            >/tmp/stand-pf-${target}.log 2>&1 &
+        echo $! > "$pidfile"
+        sleep 1
+        if kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+            log_info "Запущен в фоне (PID=$(cat "$pidfile"))"
+            echo -e "  Остановить: ${CYAN}./stand.sh pf stop $target${NC}"
+        else
+            log_err "Port-forward не запустился — лог: /tmp/stand-pf-${target}.log"
+            return 1
+        fi
+    else
+        echo -e "  Остановить: ${BOLD}Ctrl+C${NC}"
+        echo
+        kubectl port-forward -n "$ns" "svc/$svc" "${lport}:${rport}"
+    fi
+}
+
+cmd_pf_stop() {
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        # Остановить все фоновые port-forward
+        local stopped=0
+        for pidfile in /tmp/stand-pf-*.pid; do
+            [[ -f "$pidfile" ]] || continue
+            local name pid
+            name=$(basename "$pidfile" .pid | sed 's/stand-pf-//')
+            pid=$(cat "$pidfile")
+            if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null
+                log_info "Остановлен port-forward: $name (PID=$pid)"
+                stopped=$((stopped + 1))
+            fi
+            rm -f "$pidfile"
+        done
+        [[ $stopped -eq 0 ]] && log_warn "Нет запущенных фоновых port-forward"
+    else
+        local pidfile="/tmp/stand-pf-${target}.pid"
+        if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+            kill "$(cat "$pidfile")" 2>/dev/null
+            rm -f "$pidfile"
+            log_info "Остановлен port-forward: $target"
+        else
+            log_warn "Port-forward '$target' не запущен"
+        fi
+    fi
+}
+
 # ── остановка ─────────────────────────────────────────────────────────────────
 cmd_stop() {
     log_step "Остановка minikube (состояние сохраняется)"
@@ -490,6 +663,10 @@ usage() {
   send <type> [event_type] '<json>'
                      Отправить произвольное событие в outbox
   tail [type] [n]    Показать последние N сообщений из топика (default: orders, 10)
+  monitoring on|off  Включить / выключить мониторинг на живом стенде
+  pf <сервис> [--bg] Port-forward: grafana, prometheus, kafka-ui, connect
+                     --bg: запустить в фоне (не блокирует терминал)
+  pf stop [сервис]   Остановить фоновый port-forward (все или конкретный)
 EOF
 }
 
@@ -529,9 +706,17 @@ main() {
                 || die "minikube не запущен — запусти сначала './stand.sh start'"
             build_image
             ;;
-        smoke-test) cmd_smoke_test ;;
-        send)       cmd_send "$@" ;;
-        tail)       cmd_tail "$@" ;;
+        smoke-test)  cmd_smoke_test ;;
+        send)        cmd_send "$@" ;;
+        tail)        cmd_tail "$@" ;;
+        monitoring)  cmd_monitoring "$@" ;;
+        pf)
+            if [[ "${1:-}" == "stop" ]]; then
+                cmd_pf_stop "${2:-}"
+            else
+                cmd_pf "$@"
+            fi
+            ;;
         help|--help|-h|"") usage ;;
         *) log_err "Неизвестная команда: $cmd"; usage; exit 1 ;;
     esac

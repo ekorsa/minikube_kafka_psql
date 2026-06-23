@@ -51,6 +51,15 @@ monitoring:
   kube-prometheus-stack:
     alertmanager:
       enabled: false
+    # minikube: control plane listens on 127.0.0.1 inside VM — unreachable from pod network
+    kubeScheduler:
+      enabled: false
+    kubeControllerManager:
+      enabled: false
+    kubeEtcd:
+      enabled: false
+    kubeProxy:
+      enabled: false
     prometheus:
       prometheusSpec:
         retention: 6h

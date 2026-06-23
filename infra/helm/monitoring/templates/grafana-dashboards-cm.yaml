@@ -61,7 +61,7 @@ data:
           "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
           "targets": [{
             "expr": "sum by (topic) (rate(kafka_server_brokertopicmetrics_messagesinpersec_total[5m]))",
-            "legendFormat": "{{topic}}"
+            "legendFormat": "{{ "{{" }}topic{{ "}}" }}"
           }]
         },
         {
@@ -71,7 +71,7 @@ data:
           "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
           "targets": [{
             "expr": "sum by (consumergroup, topic) (kafka_consumergroup_lag)",
-            "legendFormat": "{{consumergroup}} / {{topic}}"
+            "legendFormat": "{{ "{{" }}consumergroup{{ "}}" }} / {{ "{{" }}topic{{ "}}" }}"
           }]
         },
         {
@@ -81,7 +81,7 @@ data:
           "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
           "targets": [{
             "expr": "sum by (topic) (rate(kafka_server_brokertopicmetrics_bytesinpersec_total[5m]))",
-            "legendFormat": "{{topic}}"
+            "legendFormat": "{{ "{{" }}topic{{ "}}" }}"
           }]
         },
         {
@@ -91,7 +91,7 @@ data:
           "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
           "targets": [{
             "expr": "sum by (topic) (rate(kafka_server_brokertopicmetrics_bytesoutpersec_total[5m]))",
-            "legendFormat": "{{topic}}"
+            "legendFormat": "{{ "{{" }}topic{{ "}}" }}"
           }]
         },
         {
@@ -101,7 +101,7 @@ data:
           "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
           "targets": [{
             "expr": "jvm_memory_bytes_used{area=\"HeapMemoryUsage\",namespace=\"kafka\"}",
-            "legendFormat": "{{pod}}"
+            "legendFormat": "{{ "{{" }}pod{{ "}}" }}"
           }]
         }
       ]
@@ -140,7 +140,7 @@ data:
           "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
           "targets": [{
             "expr": "cnpg_pg_database_size_bytes",
-            "legendFormat": "{{datname}}"
+            "legendFormat": "{{ "{{" }}datname{{ "}}" }}"
           }],
           "fieldConfig": {"defaults": {"unit": "bytes"}}
         },
@@ -171,7 +171,7 @@ data:
           "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
           "targets": [{
             "expr": "sum by (datname) (rate(cnpg_pg_stat_database_xact_commit_total[5m]) + rate(cnpg_pg_stat_database_xact_rollback_total[5m]))",
-            "legendFormat": "{{datname}}"
+            "legendFormat": "{{ "{{" }}datname{{ "}}" }}"
           }]
         },
         {
@@ -181,7 +181,7 @@ data:
           "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
           "targets": [{
             "expr": "rate(cnpg_pg_stat_database_blks_hit_total[5m]) / (rate(cnpg_pg_stat_database_blks_hit_total[5m]) + rate(cnpg_pg_stat_database_blks_read_total[5m]))",
-            "legendFormat": "{{datname}}"
+            "legendFormat": "{{ "{{" }}datname{{ "}}" }}"
           }]
         }
       ]
